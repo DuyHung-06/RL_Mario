@@ -1,0 +1,42 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Packaging / editable install artifacts
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Testing & linters
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Training runs, checkpoints, and generated media (from mario_ppo.train / evaluate)
+runs/
+*.pt
+*.pth
+*.mp4
+wandb/
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local environment secrets
+.env
