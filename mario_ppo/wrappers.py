@@ -130,6 +130,16 @@ class FrameSkip(gym.Wrapper):
       - trả quan sát là max theo từng điểm ảnh của HAI khung cuối (NES nhấp nháy sprite giữa các khung);
         nếu chỉ chạy được một khung thì trả khung đó;
       - trả terminated, truncated, info của khung cuối cùng.
+
+    Note phản hồi từ môi trường (obs, reward, terminated, truncated, info):
+      - obs: np.ndarray shape (240, 256, 3), dtype uint8 — ảnh khung hình RGB của màn hình NES
+        (FrameSkip lấy max từng điểm ảnh của 2 khung cuối để chống nhấp nháy sprite).
+      - reward: np.ndarray shape (5,), dtype float32 — phần thưởng véc-tơ 5 chiều [x_pos, time, death, coin, enemy]
+        (FrameSkip cộng dồn tổng qua tối đa `skip` khung).
+      - terminated: bool — True khi lượt kết thúc thật (Mario chết, chạm cờ, ...); gặp True thì dừng skip sớm.
+      - truncated: bool — True khi lượt bị cắt ngắn từ bên ngoài (giới hạn bước, ...); gặp True thì dừng skip sớm.
+      - info: dict — thông tin phụ của khung cuối cùng (gồm các khóa: x_pos, y_pos, flag_get, coins, life,
+        score, stage, world, status, time).
     """
 
     def __init__(self, env, skip=4):
@@ -137,7 +147,26 @@ class FrameSkip(gym.Wrapper):
         self.skip = skip
 
     def step(self, action):
-        raise NotImplementedError("TODO: FrameSkip.step")
+        total_reward = None
+        obs_buffer = []
+        for _ in range(self.skip):
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            r = np.array(reward, dtype=np.float32)
+            total_reward = r if total_reward is None else total_reward + r
+            
+            obs_buffer.append(obs)
+            if len(obs_buffer) > 2:
+                obs_buffer.pop(0)
+
+            if terminated or truncated:
+                break
+
+        if len(obs_buffer) == 1:
+            final_obs = obs_buffer[0]
+        else:
+            final_obs = np.maximum(obs_buffer[0], obs_buffer[1])
+        return final_obs, total_reward, terminated, truncated, info
+
 
 
 class GrayResize(gym.ObservationWrapper):
@@ -151,10 +180,17 @@ class GrayResize(gym.ObservationWrapper):
     def __init__(self, env, size=84):
         super().__init__(env)
         self.size = size
-        raise NotImplementedError("TODO: GrayResize.__init__ (đặt self.observation_space)")
+        self.observation_space = gym.spaces.Box(  #pixel anh 8-bit
+            low=0,
+            high=255,
+            shape=(self.size, self.size),
+            dtype=np.uint8
+        )
 
     def observation(self, obs):
-        raise NotImplementedError("TODO: GrayResize.observation")
+        gray = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+        resized = cv2.resize(gray, (self.size, self.size), interpolation=cv2.INTER_AREA) # tinh trung binh khi thu nho diem anh
+        return resized
 
 
 class ScalarizeReward(gym.Wrapper):
@@ -168,10 +204,24 @@ class ScalarizeReward(gym.Wrapper):
 
     def __init__(self, env, weights):
         super().__init__(env)
-        raise NotImplementedError("TODO: ScalarizeReward.__init__")
+        reward_space = getattr(self.env.unwrapped, "reward_space", None)
+        num_objectives = reward_space.shape[0] if reward_space is not None else 5
+
+        w = np.asarray(weights, dtype=np.float32)
+        if w.ndim != 1 or w.shape[0] != num_objectives:
+            raise ValueError(f"expected {num_objectives} weights, got {w.shape}")
+
+        self.weights = w
+
+                            
 
     def step(self, action):
-        raise NotImplementedError("TODO: ScalarizeReward.step")
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        info["vector_reward"] = np.asarray(reward, dtype=np.float32)
+        scalar_reward = float(np.dot(self.weights, info["vector_reward"]))
+
+        return obs, scalar_reward, terminated, truncated, info
+        
 
 
 # ---------------------------------------------------------------------------------------------------------
