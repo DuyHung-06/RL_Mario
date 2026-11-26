@@ -27,8 +27,38 @@ def compute_gae(rewards, values, terminated, truncated, final_values, last_value
         final_values_t nếu bước t bị cắt, ngược lại là values_{t+1}.
       - Truy hồi lùi: A_t = delta_t + gamma * lam * (1 - terminated_t) * (1 - truncated_t) * A_{t+1}
         (sau khi kết thúc hoặc bị cắt, bước kế trong bộ đệm thuộc lượt khác).
-    """
-    raise NotImplementedError("TODO: compute_gae")
+      """
+    T, N = rewards.shape
+    advantages = torch.zeros(T, N)
+
+    terminated = terminated.clone()
+    truncated = truncated.clone()
+    final_values = final_values.clone()
+
+    for n in range(N):
+      if terminated[T-1, n] == 0 and truncated[T-1, n] == 0:
+        truncated[T-1,n] = 1
+        final_values[T-1,n] = last_value[n]
+
+    A_next = torch.zeros(N)
+    for t in reversed(range(T)):
+      if t == T-1:
+        V_next = torch.where(truncated[t] == 1, final_values[t], values[t])
+      else:
+        V_next = torch.where(truncated[t] == 1, final_values[t], values[t+1])
+      
+      delta = rewards[t] + gamma * (1.0 - terminated[t])* V_next - values[t]
+      A_next = delta + gamma * lam * (1.0 - terminated[t]) * (1.0 - truncated[t]) * A_next
+      advantages[t] = A_next
+
+    returns = advantages + values
+    return advantages, returns
+
+
+    
+
+
+
 
 
 def clipped_policy_loss(ratio, advantages, clip):
@@ -36,8 +66,9 @@ def clipped_policy_loss(ratio, advantages, clip):
 
     Mục đích: tăng xác suất hành động có lợi thế dương nhưng không để chính sách mới lệch quá xa chính sách cũ.
     """
-    raise NotImplementedError("TODO: clipped_policy_loss")
-
+    surr1 = ratio * advantages
+    surr2 = torch.clamp(ratio, 1.0 - clip, 1.0 +clip) * advantages
+    return -torch.min(surr1,surr2).mean()
 
 def value_loss(values, returns, old_values=None, clip=None):
     """Mất mát của critic: mean((values - returns)^2) (không có hệ số 1/2).
@@ -45,7 +76,13 @@ def value_loss(values, returns, old_values=None, clip=None):
     Biến thể cắt (khi old_values và clip khác None): v_clip = old_values + clamp(values - old_values, -clip, clip),
     mất mát = mean(max((values - returns)^2, (v_clip - returns)^2)).
     """
-    raise NotImplementedError("TODO: value_loss")
+    loss_unclipped = (values - returns)**2
+    if old_values is not None and clip is not None:
+      v_clipped = old_values + torch.clamp(values - old_values, -clip,clip)
+      loss_clipped = (v_clipped - returns) ** 2
+      return torch.max(loss_unclipped, loss_clipped).mean()
+    return loss_unclipped.mean()
+
 
 
 def approx_kl_and_clipfrac(log_ratio, clip):
@@ -54,8 +91,10 @@ def approx_kl_and_clipfrac(log_ratio, clip):
       clipfrac  = tỉ lệ mẫu có |ratio - 1| > clip
     Mục đích: theo dõi chính sách thay đổi bao nhiêu sau mỗi lần cập nhật (approx_kl quá lớn = bước quá dài).
     """
-    raise NotImplementedError("TODO: approx_kl_and_clipfrac")
-
+    ratio = torch.exp(log_ratio)
+    approx_kl = float(((ratio-1) - log_ratio).mean())
+    clipfrac = float((torch.abs(ratio - 1) > clip).float().mean())
+    return approx_kl, clipfrac
 
 def ppo_loss(new_logp, entropy, values, batch, cfg):
     """Mất mát tổng trên một mini-batch: policy_loss + vf_coef * value_loss - ent_coef * mean(entropy).
@@ -67,8 +106,33 @@ def ppo_loss(new_logp, entropy, values, batch, cfg):
       (unbiased=False). returns không đổi.
     Đầu ra: (loss tensor vô hướng, stats dict các float: policy_loss, value_loss, entropy, approx_kl, clipfrac).
     """
-    raise NotImplementedError("TODO: ppo_loss")
+    log_ratio = new_logp - batch["old_logp"]
+    ratio = torch.exp(log_ratio)
 
+    advantages = batch["advantages"]
+    if cfg.norm_adv:
+        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+
+    pl = clipped_policy_loss(ratio, advantages, cfg.clip_coef)
+
+    if cfg.clip_vloss:
+        vl = value_loss(values, batch["returns"], batch["old_values"], cfg.clip_coef)
+    else:
+        vl = value_loss(values, batch["returns"])
+
+    ent = entropy.mean()
+
+    loss = pl + cfg.vf_coef * vl - cfg.ent_coef * ent
+
+    kl, cf = approx_kl_and_clipfrac(log_ratio, cfg.clip_coef)
+    stats = {
+        "policy_loss": float(pl),
+        "value_loss": float(vl),
+        "entropy": float(ent),
+        "approx_kl": kl,
+        "clipfrac": cf,
+    }
+    return loss, stats
 
 def ppo_update(model, optimizer, batch, cfg):
     """Một lần cập nhật PPO trên toàn bộ dữ liệu của đoạn thu vừa thu.
