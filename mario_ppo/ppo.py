@@ -150,7 +150,41 @@ def ppo_update(model, optimizer, batch, cfg):
       - nếu cfg.target_kl khác None và approx_kl trung bình của epoch vừa xong > target_kl: dừng các epoch còn lại.
     Đầu ra: dict trung bình các stats của ppo_loss trên mọi mini-batch, thêm "minibatch_updates" (số bước gradient).
     """
-    raise NotImplementedError("TODO: ppo_update")
+    batch_size = batch["obs"].shape[0]
+    device = batch["obs"].device
+    totals = {}
+    updates = 0
+
+    for _ in range(cfg.update_epochs):
+        perm = torch.randperm(batch_size, device=device)
+        epoch_kl = 0.0
+        epoch_updates = 0
+
+        for idx in torch.tensor_split(perm, cfg.num_minibatches):
+            if idx.numel() == 0:
+                continue
+            mb = {k: v[idx] for k, v in batch.items()}
+            logits, values = model(mb["obs"])
+            dist = torch.distributions.Categorical(logits=logits)
+            loss, stats = ppo_loss(dist.log_prob(mb["actions"]), dist.entropy(), values, mb, cfg)
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
+            optimizer.step()
+
+            for k, v in stats.items():
+                totals[k] = totals.get(k, 0.0) + v
+            updates += 1
+            epoch_kl += stats["approx_kl"]
+            epoch_updates += 1
+
+        if cfg.target_kl is not None and epoch_updates > 0 and (epoch_kl / epoch_updates) > cfg.target_kl:
+            break
+
+    out = {k: v / updates for k, v in totals.items()}
+    out["minibatch_updates"] = updates
+    return out
 
 
 def linear_schedule(start, step, total):
